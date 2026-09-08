@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <!-- GitHub Pages: replace the value below with the deployed Apps Script /exec URL. -->
-  <meta name="staycation-gas-web-app-url" content="https://script.google.com/macros/s/AKfycbwwr3paiJ4Ds0U7zPDg6M6iBm8E7PdNhgltURw84NiF6jcaBwoLsf8bWWiRUbkoo1gG/exec">
+  <meta name="staycation-gas-web-app-url" content="https://script.google.com/macros/s/AKfycbzLymQBy3SEV7UtY1PfmeKBbKafB80eBmZQmh_-M7U3c1VDaSxTA6TzfVoSqg0_5XO_/exec">
   <title>BOOK NOW!</title>
   
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -3402,139 +3402,49 @@ select:focus-visible,
     // ================================================
     // SERVER CALLS
     // ================================================
-    // Uses google.script.run when this file is served by Apps Script. When the
-    // same index.html is hosted on GitHub Pages, calls travel through a hidden,
-    // origin-checked Apps Script iframe bridge instead.
+    // Same static-hosting transport as KALAHI: plain-text POST, JSON response.
+    // Native Apps Script hosting still uses google.script.run.
     var BACKEND_BRIDGE = (function() {
       var meta = document.querySelector('meta[name="staycation-gas-web-app-url"]');
       var webAppUrl = meta ? String(meta.content || '').trim() : '';
-      var channel = 'staycation-' + Date.now() + '-' + Math.random().toString(36).slice(2);
-      var iframe = null;
-      var bridgeWindow = null;
-      var readyPromise = null;
-      var readyResolve = null;
-      var pending = {};
-      var nextId = 1;
-      var helloTimer = null;
-      var requestTimeoutMs = 60000;
 
-      function hasNativeRuntime() {
-        return typeof google !== 'undefined' && google.script && google.script.run;
-      }
-
-      function isConfigured() {
-        return /^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec(?:[?#].*)?$/.test(webAppUrl);
-      }
-
-      function bridgeUrl() {
-        var url = new URL(webAppUrl);
-        url.searchParams.set('page', 'bridge');
-        url.searchParams.set('channel', channel);
-        return url.toString();
-      }
-
-      function handleMessage(event) {
-        var message = event.data;
-        if (!message || message.source !== 'staycation-gas-bridge' || message.channel !== channel) return;
-
-        if (message.type === 'ready') {
-          bridgeWindow = event.source;
-          if (helloTimer) clearInterval(helloTimer);
-          helloTimer = null;
-          if (readyResolve) readyResolve();
-          readyResolve = null;
-          return;
-        }
-
-        if (event.source !== bridgeWindow || message.type !== 'response' || !pending[message.id]) return;
-        var request = pending[message.id];
-        delete pending[message.id];
-        clearTimeout(request.timer);
-        if (message.ok) request.resolve(message.result === undefined ? null : message.result);
-        else request.reject(new Error(message.error || 'The backend request failed.'));
-      }
-
-      function ensureReady() {
-        if (hasNativeRuntime()) return Promise.resolve();
-        if (readyPromise) return readyPromise;
-        if (!isConfigured()) {
-          return Promise.reject(new Error(
-            'Backend is not configured. Set the staycation-gas-web-app-url meta tag to your Apps Script /exec URL.'
-          ));
-        }
-
-        readyPromise = new Promise(function(resolve, reject) {
-          readyResolve = resolve;
-          window.addEventListener('message', handleMessage);
-
-          iframe = document.createElement('iframe');
-          iframe.src = bridgeUrl();
-          iframe.title = 'Staycation secure backend connection';
-          iframe.setAttribute('aria-hidden', 'true');
-          iframe.tabIndex = -1;
-          iframe.style.cssText = 'position:fixed;width:1px;height:1px;left:-9999px;border:0;opacity:0;pointer-events:none;';
-          document.body.appendChild(iframe);
-
-          function hello() {
-            if (iframe && iframe.contentWindow) {
-              iframe.contentWindow.postMessage({
-                source: 'staycation-github-client',
-                type: 'hello',
-                channel: channel
-              }, '*');
-            }
-          }
-
-          iframe.addEventListener('load', hello);
-          helloTimer = setInterval(hello, 400);
-          hello();
-
-          setTimeout(function() {
-            if (!readyResolve) return;
-            clearInterval(helloTimer);
-            helloTimer = null;
-            readyResolve = null;
-            readyPromise = null;
-            reject(new Error(
-              'Could not connect to Apps Script. Verify the /exec URL, deployment access, and configured GitHub origin.'
-            ));
-          }, 15000);
-        });
-        return readyPromise;
-      }
-
-      function invoke(method, args) {
-        if (hasNativeRuntime()) {
+      async function invoke(method, args) {
+        if (typeof google !== 'undefined' && google.script && google.script.run) {
           return new Promise(function(resolve, reject) {
             google.script.run
               .withSuccessHandler(function(result) { resolve(result === undefined ? null : result); })
               .withFailureHandler(function(error) {
                 reject(new Error((error && error.message) || ('Request failed: ' + method)));
-              })[method].apply(null, args);
+              })[method].apply(null, args || []);
           });
         }
-
-        return ensureReady().then(function() {
-          return new Promise(function(resolve, reject) {
-            var id = String(nextId++);
-            var timer = setTimeout(function() {
-              if (!pending[id]) return;
-              delete pending[id];
-              reject(new Error('Backend request timed out: ' + method));
-            }, requestTimeoutMs);
-            pending[id] = { resolve: resolve, reject: reject, timer: timer };
-            bridgeWindow.postMessage({
-              source: 'staycation-github-client',
-              type: 'request',
-              channel: channel,
-              id: id,
-              method: method,
-              args: args
-            }, '*');
+        if (!/^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec(?:[?#].*)?$/.test(webAppUrl)) {
+          throw new Error('Set the staycation-gas-web-app-url meta tag to your Staycation Apps Script /exec URL.');
+        }
+        var response;
+        try {
+          response = await fetch(webAppUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+            body: JSON.stringify({ action: method, args: args || [] }),
+            redirect: 'follow',
+            credentials: 'omit'
           });
-        });
+        } catch (error) {
+          throw new Error('Could not reach the booking server. Check your connection and try again.');
+        }
+        if (!response.ok) throw new Error('Booking server returned HTTP ' + response.status + '.');
+        var result;
+        try {
+          result = await response.json();
+        } catch (error) {
+          throw new Error('Unexpected server response. Check the /exec URL and deploy the updated Code.gs with Anyone access.');
+        }
+        if (!result || result.ok !== true) {
+          throw new Error((result && result.message) || ('Request failed: ' + method));
+        }
+        return result.data === undefined ? null : result.data;
       }
-
       return { invoke: invoke };
     })();
 
